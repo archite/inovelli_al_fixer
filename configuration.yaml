@@ -1,0 +1,11 @@
+pyscript:
+  apps:
+    inovelli_al_fixer:
+      - al_sleep_switch: switch.adaptive_lighting_sleep_mode_default
+        al_switch: switch.adaptive_lighting_default
+        lights:
+          - light.hallway
+          - light.kitchen
+          - light.kitchen_dining
+          - light.living_room
+          - light.stairway
