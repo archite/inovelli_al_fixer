@@ -1,6 +1,4 @@
-# MIT License
-#
-# Copyright (c) 2024 Adam Karim
+# Copyright 2024 Adam Karim
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the “Software”), to deal
@@ -19,6 +17,8 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+
+from operator import call
 
 # Default values for trigger matching
 cluster = 64561
@@ -46,17 +46,21 @@ inovelli_models = [
 registered_triggers = []
 
 
-def make_inovelli_al_fixer(lights=None, al_switch=None, al_sleep_switch=None):
+def make_inovelli_al_fixer(*, lights: str, al_switch: str, al_sleep_switch: str):
     for light_entity in lights:
+        # Add prefix to log messages to make easier to trace
+        def mklog(msg: str, level: str = "debug"):
+            call(eval(f"log.{level}"), f"{light_entity}: {msg}")
+
         # Find group entity and fail if not found
         entity = hass.data["entity_registry"].async_get(light_entity)
 
         if not entity:
-            log.error(f"{light_entity}: Entity not found!")
+            mklog("Entity not found!", "error")
             return
 
         if entity.translation_key != "light_group":
-            log.error(f"{light_entity}: Entity is not a group!")
+            mklog("Entity is not a group!", "error")
             return
 
         # Get group object for light
@@ -71,7 +75,7 @@ def make_inovelli_al_fixer(lights=None, al_switch=None, al_sleep_switch=None):
         ]
 
         if not switches:
-            log.error(f"{light_entity}: No Inovelli switches found in group!")
+            mklog("No Inovelli switches found in group!", "error")
             return
 
         trigger = [
@@ -84,13 +88,13 @@ def make_inovelli_al_fixer(lights=None, al_switch=None, al_sleep_switch=None):
         # Manage light based on command
         def light_on(light_entity, command):
             al_attr = state.getattr(al_switch)
-            log.debug(f"{light_entity}: setting light on")
+            mklog("setting light on")
             light.turn_on(
                 brightness_pct=al_attr["brightness_pct"]
                 if command == "button_2_press"
                 else al_attr["configuration"][
                     "sleep_brightness"
-                    if state.get(al_sleep_switch) == "on"
+                    if hass.states.is_state(al_sleep_switch, "on")
                     else "min_brightness"
                 ]
                 if command == "button_1_double"
@@ -103,11 +107,8 @@ def make_inovelli_al_fixer(lights=None, al_switch=None, al_sleep_switch=None):
             )
 
         # Set manual control as needed
-        def manul_control(light_entity, enabled):
-            log.debug(
-                f"{light_entity}: setting manual control "
-                + ("on" if enabled else "off")
-            )
+        def manual_control(light_entity, enabled):
+            mklog("setting manual control " + ("on" if enabled else "off"))
             adaptive_lighting.set_manual_control(
                 entity_id=al_switch,
                 lights=[light_entity],
@@ -117,27 +118,27 @@ def make_inovelli_al_fixer(lights=None, al_switch=None, al_sleep_switch=None):
         @event_trigger("zha_event", " and ".join(trigger))
         @task_unique(f"inovelli_al_fixer_{light_entity}")
         def inovelli_event(light_entity=light_entity, command=None, **kwargs):
-            log.debug(f"{light_entity}: {command} pressed")
+            mklog(f"{command} pressed")
 
             # Turn on light to double tap level and set manual control
             if command in level_commands:
-                manul_control(light_entity, True)
+                manual_control(light_entity, True)
                 light_on(light_entity, command)
 
             # Turn on/restore without manual control on
             if command in on_commands:
                 light_on(light_entity, command)
-                log.debug(f"{light_entity}: waiting for light in manual_control")
+                mklog("waiting for light in manual_control")
                 trig_info = task.wait_until(
                     state_trigger=f"'{light_entity}' in {al_switch}.manual_control",
                     timeout=60,
                 )
                 if trig_info["trigger_type"] == "state":
-                    manul_control(light_entity, False)
+                    manual_control(light_entity, False)
 
             # Turn manual control on hold
             if command in dim_commands:
-                manul_control(light_entity, True)
+                manual_control(light_entity, True)
 
         registered_triggers.append(inovelli_event)
 
