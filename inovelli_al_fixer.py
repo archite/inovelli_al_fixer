@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from operator import call
+import logging
 
 # Default values for trigger matching
 cluster = 64561
@@ -46,29 +46,33 @@ inovelli_models = [
 registered_triggers = []
 
 
-def make_inovelli_al_fixer(*, lights: str, al_switch: str, al_sleep_switch: str):
+def make_inovelli_al_fixer(
+    *, lights: str, al_switch: str, al_sleep_switch: str
+) -> None:
     for light_entity in lights:
         # Add prefix to log messages to make easier to trace
-        def mklog(msg: str, level: str = "debug"):
-            call(eval(f"log.{level}"), f"{light_entity}: {msg}")
+        def mklog(msg: str, level: str = "debug") -> None:
+            logger = getattr(log.info, "__self__")
+            level = getattr(logging, level.upper(), logger.getEffectiveLevel())
+            logger.log(level, f"{light_entity}: {msg}")
 
         # Find group entity and fail if not found
-        entity = hass.data["entity_registry"].async_get(light_entity)
+        entity = hass.data["zha"].gateway_proxy.get_entity_reference(light_entity)
 
         if not entity:
             mklog("Entity not found!", "error")
             return
 
-        if entity.translation_key != "light_group":
+        if not entity.entity_data.group_proxy:
             mklog("Entity is not a group!", "error")
             return
 
         # Get group object for light
-        group = hass.data["zha"].gateway.async_get_group_by_name(entity.original_name)
+        group = entity.entity_data.group_proxy.group
 
         # Find Inovelli switches in group and fail if not found
         switches = [
-            member.device.device_id
+            str(member.device.ieee)
             for member in group.members
             if member.device.manufacturer == "Inovelli"
             and member.device.model in inovelli_models
@@ -81,12 +85,12 @@ def make_inovelli_al_fixer(*, lights: str, al_switch: str, al_sleep_switch: str)
         trigger = [
             f"cluster_id == {cluster}",
             f"command in {commands}",
-            f"device_id in {switches}",
+            f"device_ieee in {switches}",
             f"endpoint_id == {endpoint}",
         ]
 
         # Manage light based on command
-        def light_on(light_entity, command):
+        def light_on(light_entity: str, command: str) -> None:
             al_attr = state.getattr(al_switch)
             mklog("setting light on")
             light.turn_on(
@@ -107,7 +111,7 @@ def make_inovelli_al_fixer(*, lights: str, al_switch: str, al_sleep_switch: str)
             )
 
         # Set manual control as needed
-        def manual_control(light_entity, enabled):
+        def manual_control(light_entity: str, enabled: str) -> None:
             mklog("setting manual control " + ("on" if enabled else "off"))
             adaptive_lighting.set_manual_control(
                 entity_id=al_switch,
@@ -117,7 +121,9 @@ def make_inovelli_al_fixer(*, lights: str, al_switch: str, al_sleep_switch: str)
 
         @event_trigger("zha_event", " and ".join(trigger))
         @task_unique(f"inovelli_al_fixer_{light_entity}")
-        def inovelli_event(light_entity=light_entity, command=None, **kwargs):
+        def inovelli_event(
+            light_entity: str = light_entity, command: str | None = None, **kwargs
+        ) -> None:
             mklog(f"{command} pressed")
 
             # Turn on light to double tap level and set manual control
@@ -144,6 +150,6 @@ def make_inovelli_al_fixer(*, lights: str, al_switch: str, al_sleep_switch: str)
 
 
 @time_trigger("startup")
-def inovelli_al_fixer_startup():
+def inovelli_al_fixer_startup() -> None:
     for app in pyscript.app_config:
         make_inovelli_al_fixer(**app)
